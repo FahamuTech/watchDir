@@ -30,12 +30,14 @@ package com.company;
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-import java.nio.file.*;
-import static java.nio.file.StandardWatchEventKinds.*;
-import static java.nio.file.LinkOption.*;
-import java.nio.file.attribute.*;
 import java.io.*;
-import java.util.*;
+import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.HashMap;
+import java.util.Map;
+
+import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
+import static java.nio.file.StandardWatchEventKinds.*;
 
 /**
  * Example to watch a directory (or tree) for changes to files.
@@ -44,13 +46,28 @@ import java.util.*;
 public class WatchDir {
 
     private final WatchService watcher;
-    private final Map<WatchKey,Path> keys;
+    private final Map<WatchKey, Path> keys;
     private final boolean recursive;
     private boolean trace = false;
 
-    @SuppressWarnings("unchecked")
-    static <T> WatchEvent<T> cast(WatchEvent<?> event) {
-        return (WatchEvent<T>)event;
+    /**
+     * Creates a WatchService and registers the given directory
+     */
+    public WatchDir(Path dir, boolean recursive) throws IOException {
+        this.watcher = FileSystems.getDefault().newWatchService();
+        this.keys = new HashMap<WatchKey, Path>();
+        this.recursive = recursive;
+
+        if (recursive) {
+            System.out.format("Scanning %s ...\n", dir);
+            registerAll(dir);
+            System.out.println("Done.");
+        } else {
+            register(dir);
+        }
+
+        // enable trace after initial registration
+        this.trace = true;
     }
 
     /**
@@ -71,48 +88,83 @@ public class WatchDir {
         keys.put(key, dir);
     }
 
+    @SuppressWarnings("unchecked")
+    static <T> WatchEvent<T> cast(WatchEvent<?> event) {
+        return (WatchEvent<T>) event;
+    }
+
+    public static void main(String[] args) throws IOException {
+
+        executeCommands("echo olive | sudo -S chmod -R o+rxw /home/joshua/Dropbox/mysql");
+
+        // register directory and process its events
+        Path dir = Paths.get("/home/joshua/Dropbox/mysql");
+        new WatchDir(dir, true).processEvents();
+    }
+
+    public static void executeCommands(String command) throws IOException {
+
+        File tempScript = createTempScript(command);
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder("bash", tempScript.toString());
+            pb.inheritIO();
+            Process process = pb.start();
+            process.waitFor();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            tempScript.delete();
+        }
+    }
+
+    static void usage() {
+        System.err.println("usage: java WatchDir [-r] dir");
+        System.exit(-1);
+    }
+
+    public static File createTempScript(String command) throws IOException {
+        File tempScript = File.createTempFile("script", null);
+
+        Writer streamWriter = new OutputStreamWriter(new FileOutputStream(
+                tempScript));
+        PrintWriter printWriter = new PrintWriter(streamWriter);
+
+        printWriter.println("#!/bin/bash");
+        printWriter.println(command);
+
+        printWriter.close();
+
+        return tempScript;
+    }
+
     /**
      * Register the given directory, and all its sub-directories, with the
      * WatchService.
      */
     private void registerAll(final Path start) throws IOException {
-        // register directory and sub-directories
-        Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
-                    throws IOException
-            {
-                register(dir);
-                return FileVisitResult.CONTINUE;
-            }
-        });
-    }
+        try {
+            // register directory and sub-directories
+            Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
+                        throws IOException {
+                    register(dir);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (AccessDeniedException e) {
+            System.out.println("Access denial");
+            //edit the file access of the mysql data
 
-    /**
-     * Creates a WatchService and registers the given directory
-     */
-    public WatchDir(Path dir, boolean recursive) throws IOException {
-        this.watcher = FileSystems.getDefault().newWatchService();
-        this.keys = new HashMap<WatchKey,Path>();
-        this.recursive = recursive;
-
-        if (recursive) {
-            System.out.format("Scanning %s ...\n", dir);
-            registerAll(dir);
-            System.out.println("Done.");
-        } else {
-            register(dir);
         }
-
-        // enable trace after initial registration
-        this.trace = true;
     }
 
     /**
      * Process all events for keys queued to the watcher
      */
     public void processEvents() {
-        for (;;) {
+        for (; ; ) {
 
             // wait for key to be signalled
             WatchKey key;
@@ -128,7 +180,7 @@ public class WatchDir {
                 continue;
             }
 
-            for (WatchEvent<?> event: key.pollEvents()) {
+            for (WatchEvent<?> event : key.pollEvents()) {
                 WatchEvent.Kind kind = event.kind();
 
                 // TBD - provide example of how OVERFLOW event is handled
@@ -142,8 +194,18 @@ public class WatchDir {
                 Path child = dir.resolve(name);
 
                 // print out event
-                System.out.format("%s: %s\n", event.kind().name(), child);
+                System.out.format("%s: \n", event.kind().name());
+                System.out.println(child + "   " +
+                        child.toString().replace("/home/joshua/Dropbox/", "/var/lib/"));
+                //synchronize the files
 
+                try {
+
+                    executeCommands("echo olive | sudo -S chmod -R o+rxw " + child);
+
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
                 // if directory is created, and watching recursively, then
                 // register it and its sub-directories
                 if (recursive && (kind == ENTRY_CREATE)) {
@@ -168,30 +230,5 @@ public class WatchDir {
                 }
             }
         }
-    }
-
-    static void usage() {
-        System.err.println("usage: java WatchDir [-r] dir");
-        System.exit(-1);
-    }
-
-    public static void main(String[] args) throws IOException {
-        // parse arguments
-        /*
-        if (args.length == 0 || args.length > 2)
-            usage();
-
-        boolean recursive = false;
-        int dirArg = 0;
-        if (args[0].equals("-r")) {
-            if (args.length < 2)
-                usage();
-            recursive = true;
-            dirArg++;
-        }*/
-
-        // register directory and process its events
-        Path dir = Paths.get(System.getProperty("user.home"),"Dropbox","mysql");
-        new WatchDir(dir, true).processEvents();
     }
 }
